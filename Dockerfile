@@ -26,3 +26,10 @@ RUN BACKOFFS="10 20 30 60 90" && for i in 1 2 3 4 5; do HF_TOKEN=$HF_TOKEN comfy
 
 # user-provided inputs override the auto-generated placeholders above.
 RUN wget --progress=dot:giga -O '/comfyui/input/Avatar_Reinhold_Butzheinen_amerikanisch_960x1024 (1).png' "https://cool-anteater-319.convex.cloud/api/storage/1a621e33-c645-47d0-8353-b9ab088272f4"
+
+COPY api-workflow.json /api-workflow.json
+COPY handler.py /handler.py
+
+ENV TRAINIFY_WORKFLOW_PATH=/api-workflow.json
+
+CMD ["python", "-u", "/handler.py"]
