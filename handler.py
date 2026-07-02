@@ -102,9 +102,53 @@ def _start_comfyui():
 def _custom_node_dirs():
     custom_nodes_dir = COMFY_DIR / "custom_nodes"
     if not custom_nodes_dir.exists():
-      return []
+        return []
 
     return sorted(item.name for item in custom_nodes_dir.iterdir() if item.is_dir())
+
+
+def _multitalk_import_diagnostic():
+    code = f"""
+import importlib.util
+import os
+import sys
+import traceback
+
+sys.path.insert(0, {str(COMFY_DIR)!r})
+sys.path.insert(0, {str(COMFY_DIR / "custom_nodes")!r})
+os.chdir({str(COMFY_DIR)!r})
+
+try:
+    package_dir = {str(COMFY_DIR / "custom_nodes" / "ComfyUI-WanVideoWrapper")!r}
+    init_path = os.path.join(package_dir, "__init__.py")
+    spec = importlib.util.spec_from_file_location(
+        "ComfyUI_WanVideoWrapper",
+        init_path,
+        submodule_search_locations=[package_dir],
+    )
+    package = importlib.util.module_from_spec(spec)
+    sys.modules["ComfyUI_WanVideoWrapper"] = package
+    spec.loader.exec_module(package)
+    print("import-ok", sorted(package.NODE_CLASS_MAPPINGS.keys()))
+except Exception:
+    traceback.print_exc()
+"""
+    try:
+        result = subprocess.run(
+            ["python", "-c", code],
+            cwd=str(COMFY_DIR),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout[-4000:],
+            "stderr": result.stderr[-4000:],
+        }
+    except Exception as error:
+        return {"error": str(error)}
 
 
 def _validate_required_nodes():
@@ -120,6 +164,8 @@ def _validate_required_nodes():
             + json.dumps(_custom_node_dirs())
             + ". known_wan_nodes="
             + json.dumps(known_wan_nodes[:80])
+            + ". multitalk_import="
+            + json.dumps(_multitalk_import_diagnostic())
         )
 
 
