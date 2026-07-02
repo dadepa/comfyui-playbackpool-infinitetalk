@@ -26,6 +26,13 @@ TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
 VIDEO_COMBINE_NODE_ID = "344"
+VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv"}
+VIDEO_CONTENT_TYPES = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+}
 REQUIRED_NODE_TYPES = [
     "WanVideoBlockSwap",
     "MultiTalkModelLoader",
@@ -85,6 +92,8 @@ def _start_comfyui():
         "0.0.0.0",
         "--port",
         str(COMFY_PORT),
+        "--output-directory",
+        str(COMFY_OUTPUT_DIR),
     ]
     _comfy_process = subprocess.Popen(command, cwd=str(COMFY_DIR))
 
@@ -221,6 +230,7 @@ def _patch_workflow(workflow, image_filename, audio_filename, job_id):
     video_inputs["format"] = "video/h264-mp4"
     video_inputs["save_output"] = True
     video_inputs["trim_to_audio"] = True
+    video_inputs.pop("videopreview", None)
     return workflow
 
 
@@ -276,20 +286,76 @@ def _wait_for_history(prompt_id):
     raise TimeoutError(f"ComfyUI prompt timed out: {prompt_id}")
 
 
+def _history_output_summary(history):
+    summary = {}
+    for node_id, output in (history.get("outputs") or {}).items():
+        node_summary = {}
+        for key, value in output.items():
+            if isinstance(value, list):
+                node_summary[key] = [
+                    {
+                        "filename": item.get("filename"),
+                        "subfolder": item.get("subfolder"),
+                        "type": item.get("type"),
+                    }
+                    for item in value
+                    if isinstance(item, dict)
+                ][:10]
+            else:
+                node_summary[key] = value
+        summary[node_id] = node_summary
+    return summary
+
+
+def _recent_output_files():
+    if not COMFY_OUTPUT_DIR.exists():
+        return []
+
+    files = [item for item in COMFY_OUTPUT_DIR.rglob("*") if item.is_file()]
+    files.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+    return [
+        {
+            "path": str(item.relative_to(COMFY_OUTPUT_DIR)),
+            "size": item.stat().st_size,
+        }
+        for item in files[:25]
+    ]
+
+
+def _path_from_file_info(file_info):
+    filename = file_info.get("filename")
+    if not filename:
+        return None
+
+    subfolder = file_info.get("subfolder") or ""
+    location = file_info.get("type") or "output"
+    base_dir = COMFY_OUTPUT_DIR if location == "output" else COMFY_INPUT_DIR
+    return base_dir / subfolder / filename
+
+
 def _find_video_from_history(history):
     outputs = history.get("outputs", {})
-    video_output = outputs.get(VIDEO_COMBINE_NODE_ID, {})
+    preferred_outputs = [outputs.get(VIDEO_COMBINE_NODE_ID, {})]
+    preferred_outputs.extend(output for node_id, output in outputs.items() if node_id != VIDEO_COMBINE_NODE_ID)
 
-    for file_info in video_output.get("gifs", []) + video_output.get("videos", []):
-        filename = file_info.get("filename")
-        if filename and filename.endswith(".mp4"):
-            subfolder = file_info.get("subfolder") or ""
-            return COMFY_OUTPUT_DIR / subfolder / filename
+    for output in preferred_outputs:
+        for key in ("videos", "gifs", "images"):
+            for file_info in output.get(key, []):
+                path = _path_from_file_info(file_info)
+                if path and path.suffix.lower() in VIDEO_EXTENSIONS and path.exists():
+                    return path
 
-    for path in sorted(COMFY_OUTPUT_DIR.rglob("*.mp4"), key=lambda item: item.stat().st_mtime, reverse=True):
-        return path
+    for path in sorted(COMFY_OUTPUT_DIR.rglob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+            return path
 
-    raise RuntimeError("No MP4 output found after ComfyUI render.")
+    diagnostic = {
+        "status": history.get("status"),
+        "outputs": _history_output_summary(history),
+        "recentOutputFiles": _recent_output_files(),
+        "outputDirectory": str(COMFY_OUTPUT_DIR),
+    }
+    raise RuntimeError(f"No video output found after ComfyUI render: {json.dumps(diagnostic)[:6000]}")
 
 
 def handler(event):
@@ -304,10 +370,11 @@ def handler(event):
     video_path = _find_video_from_history(history)
 
     video_base64 = base64.b64encode(video_path.read_bytes()).decode("ascii")
+    content_type = VIDEO_CONTENT_TYPES.get(video_path.suffix.lower(), "application/octet-stream")
     return {
         "video": video_base64,
         "videoBase64": video_base64,
-        "contentType": "video/mp4",
+        "contentType": content_type,
         "promptId": prompt_id,
         "filename": video_path.name,
     }
