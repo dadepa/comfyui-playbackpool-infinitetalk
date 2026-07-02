@@ -12,6 +12,9 @@ RUN git clone https://github.com/kijai/ComfyUI-MelBandRoFormer /comfyui/custom_n
 RUN git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite /comfyui/custom_nodes/ComfyUI-VideoHelperSuite && cd /comfyui/custom_nodes/ComfyUI-VideoHelperSuite && (git checkout 0edce8ef7ce173ac97a3ed3d6f4636029d1a4530 2>/dev/null || (git fetch origin 0edce8ef7ce173ac97a3ed3d6f4636029d1a4530 --depth=1 && git checkout 0edce8ef7ce173ac97a3ed3d6f4636029d1a4530) || echo "WARN: commit 0edce8ef7ce173ac97a3ed3d6f4636029d1a4530 unreachable in https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite, falling back to default branch HEAD")
 RUN git clone https://github.com/Fictiverse/ComfyUI_Fictiverse /comfyui/custom_nodes/ComfyUI_Fictiverse && cd /comfyui/custom_nodes/ComfyUI_Fictiverse && (git checkout 3cc04b022c127515540b2a7f952689b4cfd44037 2>/dev/null || (git fetch origin 3cc04b022c127515540b2a7f952689b4cfd44037 --depth=1 && git checkout 3cc04b022c127515540b2a7f952689b4cfd44037) || echo "WARN: commit 3cc04b022c127515540b2a7f952689b4cfd44037 unreachable in https://github.com/Fictiverse/ComfyUI_Fictiverse, falling back to default branch HEAD")
 
+RUN find /comfyui/custom_nodes -maxdepth 2 -name requirements.txt -print \
+  -exec python -m pip install --no-cache-dir -r {} \;
+
 # Model files live on the RunPod Network Volume. Run scripts/download-models.sh once
 # from a setup Pod attached to the same volume, then reuse the volume for Serverless.
 ENV COMFY_MODEL_ROOT=/runpod-volume/comfyui/models
