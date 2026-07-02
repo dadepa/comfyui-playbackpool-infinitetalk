@@ -26,6 +26,17 @@ TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
 VIDEO_COMBINE_NODE_ID = "344"
+REQUIRED_NODE_TYPES = [
+    "WanVideoBlockSwap",
+    "MultiTalkModelLoader",
+    "WanVideoModelLoader",
+    "WanVideoSampler",
+    "WanVideoVAELoader",
+    "WanVideoClipVisionEncode",
+    "MultiTalkWav2VecEmbeds",
+    "MelBandRoFormerModelLoader",
+    "VHS_VideoCombine",
+]
 
 _comfy_process = None
 
@@ -86,6 +97,30 @@ def _start_comfyui():
             time.sleep(2)
 
     raise TimeoutError("ComfyUI did not become ready in time.")
+
+
+def _custom_node_dirs():
+    custom_nodes_dir = COMFY_DIR / "custom_nodes"
+    if not custom_nodes_dir.exists():
+      return []
+
+    return sorted(item.name for item in custom_nodes_dir.iterdir() if item.is_dir())
+
+
+def _validate_required_nodes():
+    object_info = _json_request("GET", f"{COMFY_BASE_URL}/object_info", timeout=30)
+    missing = [node_type for node_type in REQUIRED_NODE_TYPES if node_type not in object_info]
+
+    if missing:
+        known_wan_nodes = sorted(name for name in object_info if "Wan" in name or "MultiTalk" in name)
+        raise RuntimeError(
+            "ComfyUI is missing required custom nodes: "
+            + ", ".join(missing)
+            + ". custom_nodes="
+            + json.dumps(_custom_node_dirs())
+            + ". known_wan_nodes="
+            + json.dumps(known_wan_nodes[:80])
+        )
 
 
 def _safe_name(name, fallback):
@@ -216,6 +251,7 @@ def handler(event):
     job_id = payload.get("jobId") or uuid4().hex
 
     _start_comfyui()
+    _validate_required_nodes()
     workflow = _prepare_workflow(payload, job_id)
     prompt_id = _queue_prompt(workflow)
     history = _wait_for_history(prompt_id)
