@@ -22,6 +22,8 @@ COMFY_MODEL_ROOT = Path(os.environ.get("COMFY_MODEL_ROOT", "/runpod-volume/comfy
 WORKFLOW_PATH = Path(os.environ.get("TRAINIFY_WORKFLOW_PATH", "/api-workflow.json"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2"))
 TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
+COMFY_START_TIMEOUT_SECONDS = int(os.environ.get("COMFY_START_TIMEOUT_SECONDS", "600"))
+COMFY_LOG_PATH = Path(os.environ.get("COMFY_LOG_PATH", "/tmp/comfyui-startup.log"))
 
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
@@ -137,6 +139,34 @@ def _json_request(method, url, payload=None, timeout=120):
         raise RuntimeError(f"ComfyUI HTTP {error.code}: {body}") from error
 
 
+def _tail_file(path, max_chars=6000):
+    if not path.exists():
+        return ""
+
+    try:
+        return path.read_text(errors="replace")[-max_chars:]
+    except Exception as error:
+        return f"Could not read {path}: {error}"
+
+
+def _gpu_diagnostic():
+    try:
+        result = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        return {
+            "returncode": result.returncode,
+            "stdout": result.stdout[-3000:],
+            "stderr": result.stderr[-3000:],
+        }
+    except Exception as error:
+        return {"error": str(error)}
+
+
 def _start_comfyui():
     global _comfy_process
 
@@ -155,17 +185,36 @@ def _start_comfyui():
         "--output-directory",
         str(COMFY_OUTPUT_DIR),
     ]
-    _comfy_process = subprocess.Popen(command, cwd=str(COMFY_DIR))
+    log_file = COMFY_LOG_PATH.open("ab")
+    _comfy_process = subprocess.Popen(
+        command,
+        cwd=str(COMFY_DIR),
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+    )
 
-    deadline = time.time() + 180
+    deadline = time.time() + COMFY_START_TIMEOUT_SECONDS
     while time.time() < deadline:
+        if _comfy_process.poll() is not None:
+            raise RuntimeError(
+                "ComfyUI exited before becoming ready. "
+                f"exit_code={_comfy_process.returncode}. "
+                f"startup_log={_tail_file(COMFY_LOG_PATH)}. "
+                f"gpu={json.dumps(_gpu_diagnostic())[:4000]}"
+            )
+
         try:
             _json_request("GET", f"{COMFY_BASE_URL}/system_stats", timeout=5)
             return
         except Exception:
             time.sleep(2)
 
-    raise TimeoutError("ComfyUI did not become ready in time.")
+    raise TimeoutError(
+        "ComfyUI did not become ready in time. "
+        f"timeout_seconds={COMFY_START_TIMEOUT_SECONDS}. "
+        f"startup_log={_tail_file(COMFY_LOG_PATH)}. "
+        f"gpu={json.dumps(_gpu_diagnostic())[:4000]}"
+    )
 
 
 def _custom_node_dirs():
@@ -475,8 +524,8 @@ def handler(event):
     payload = event.get("input") or {}
     job_id = payload.get("jobId") or uuid4().hex
 
-    _start_comfyui()
     _validate_model_volume()
+    _start_comfyui()
     _validate_required_nodes()
     workflow = _prepare_workflow(payload, job_id)
     prompt_id = _queue_prompt(workflow)
