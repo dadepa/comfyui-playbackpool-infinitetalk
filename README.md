@@ -14,7 +14,7 @@ docker build --build-arg HF_TOKEN=$HF_TOKEN --build-arg CIVITAI_API_KEY=$CIVITAI
 1. Connect this repository at https://runpod.io/console/serverless
 2. Create a new endpoint, select **Deploy from GitHub**
 3. Pick this repo, branch `main`
-4. Attach the Network Volume that contains `/workspace/comfyui/models`
+4. Attach the Network Volume that contains `comfyui/models`. RunPod Serverless mounts the volume at `/runpod-volume`, so the worker reads `/runpod-volume/comfyui/models`.
 5. Runpod's builder will build the Dockerfile and host the resulting image
 6. Hit the endpoint with image and audio inputs
 
@@ -31,11 +31,14 @@ chmod +x /download-models.sh
 The script writes the required model files into:
 
 ```text
-/workspace/comfyui/models
+/runpod-volume/comfyui/models
 ```
 
 The Docker image symlinks `/comfyui/models` to that volume path, so every Serverless
 worker can reuse the same model files without redownloading them into the image.
+
+If you prepare models from an interactive Pod where the same Network Volume is mounted at
+`/workspace`, set `MODEL_ROOT=/workspace/comfyui/models` before running the curl script.
 
 If a model is gated, set `HF_TOKEN` on the setup Pod before running the script.
 

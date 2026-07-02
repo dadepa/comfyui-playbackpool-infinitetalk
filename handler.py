@@ -18,7 +18,7 @@ COMFY_BASE_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
 COMFY_DIR = Path(os.environ.get("COMFY_DIR", "/comfyui"))
 COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", str(COMFY_DIR / "input")))
 COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", str(COMFY_DIR / "output")))
-COMFY_MODEL_ROOT = Path(os.environ.get("COMFY_MODEL_ROOT", "/workspace/comfyui/models"))
+COMFY_MODEL_ROOT = Path(os.environ.get("COMFY_MODEL_ROOT", "/runpod-volume/comfyui/models"))
 WORKFLOW_PATH = Path(os.environ.get("TRAINIFY_WORKFLOW_PATH", "/api-workflow.json"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2"))
 TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
@@ -99,8 +99,8 @@ def _validate_model_volume():
 
     candidates = [
         COMFY_MODEL_ROOT,
-        Path("/workspace/comfyui/models"),
         Path("/runpod-volume/comfyui/models"),
+        Path("/workspace/comfyui/models"),
         Path("/comfyui/models"),
     ]
     snapshots = []
@@ -114,7 +114,7 @@ def _validate_model_volume():
 
     raise RuntimeError(
         "Required model files are missing from the Serverless worker. "
-        "Attach the same RunPod Network Volume to the endpoint and mount it at /workspace, "
+        "Attach the same RunPod Network Volume to the endpoint. Serverless mounts it at /runpod-volume, "
         "or set COMFY_MODEL_ROOT to the mounted model directory. "
         f"Missing: {missing}. Snapshots: {json.dumps(snapshots)[:6000]}"
     )

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_ROOT="${COMFY_MODEL_ROOT:-/workspace/comfyui/models}"
+MODEL_ROOT="${COMFY_MODEL_ROOT:-/runpod-volume/comfyui/models}"
 BACKOFFS="${BACKOFFS:-10 20 30 60 90}"
 
 mkdir -p "$MODEL_ROOT" /comfyui/input /comfyui/output
