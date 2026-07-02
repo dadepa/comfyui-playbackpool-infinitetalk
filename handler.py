@@ -24,9 +24,12 @@ POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2")
 TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
 COMFY_START_TIMEOUT_SECONDS = int(os.environ.get("COMFY_START_TIMEOUT_SECONDS", "600"))
 COMFY_LOG_PATH = Path(os.environ.get("COMFY_LOG_PATH", "/tmp/comfyui-startup.log"))
+MAX_SINGLE_RENDER_SECONDS = float(os.environ.get("MAX_SINGLE_RENDER_SECONDS", "45"))
 
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
+MULTITALK_EMBEDS_NODE_ID = "360"
+FPS_NODE_ID = "361"
 VIDEO_COMBINE_NODE_ID = "344"
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv"}
 VIDEO_CONTENT_TYPES = {
@@ -357,13 +360,61 @@ def _normalize_audio_for_comfy(filename):
     return normalized_filename
 
 
+def _audio_duration_seconds(filename):
+    path = COMFY_INPUT_DIR / filename
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to read audio duration with ffprobe. stderr: {result.stderr[-2000:]}")
+
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError as error:
+        raise RuntimeError(f"Invalid ffprobe duration for {filename}: {result.stdout!r}") from error
+
+    if duration <= 0:
+        raise RuntimeError(f"Invalid audio duration for {filename}: {duration}")
+
+    return duration
+
+
+def _frames_for_duration(duration_seconds, fps):
+    raw_frames = max(1, int(duration_seconds * fps + 0.999))
+    # Wan video workflows are normally happiest with frame counts shaped as 4n + 1.
+    remainder = (raw_frames - 1) % 4
+    if remainder:
+        raw_frames += 4 - remainder
+    return raw_frames
+
+
 def _load_workflow():
     return json.loads(WORKFLOW_PATH.read_text())
 
 
-def _patch_workflow(workflow, image_filename, audio_filename, job_id):
+def _patch_workflow(workflow, image_filename, audio_filename, job_id, audio_duration_seconds=None):
     workflow[LOAD_IMAGE_NODE_ID]["inputs"]["image"] = image_filename
     workflow[LOAD_AUDIO_NODE_ID]["inputs"]["audio"] = audio_filename
+
+    fps = float(workflow.get(FPS_NODE_ID, {}).get("inputs", {}).get("value", 25))
+    if audio_duration_seconds is not None:
+        if audio_duration_seconds > MAX_SINGLE_RENDER_SECONDS:
+            raise RuntimeError(
+                "Audio is too long for a single ComfyUI avatar render. "
+                f"duration_seconds={audio_duration_seconds:.2f}, "
+                f"max_single_render_seconds={MAX_SINGLE_RENDER_SECONDS:.2f}. "
+                "Split the audio into shorter segments and stitch the rendered videos."
+            )
+
+        workflow[MULTITALK_EMBEDS_NODE_ID]["inputs"]["num_frames"] = _frames_for_duration(audio_duration_seconds, fps)
 
     video_inputs = workflow[VIDEO_COMBINE_NODE_ID]["inputs"]
     video_inputs["filename_prefix"] = f"trainify/{_safe_name(job_id, 'job')}"
@@ -378,6 +429,7 @@ def _prepare_workflow(payload, job_id):
     workflow = payload.get("workflow") or _load_workflow()
     image_filename = None
     audio_filename = None
+    audio_duration = None
 
     for item in payload.get("images") or []:
         name = item.get("name")
@@ -391,15 +443,17 @@ def _prepare_workflow(payload, job_id):
             image_filename = filename
         elif lowered.endswith((".mp3", ".wav", ".m4a", ".mp4")):
             audio_filename = _normalize_audio_for_comfy(filename)
+            audio_duration = _audio_duration_seconds(audio_filename)
 
     if payload.get("image"):
         image_filename = _write_asset(payload["image"], "trainify-image", ".png")
 
     if payload.get("audio"):
         audio_filename = _normalize_audio_for_comfy(_write_asset(payload["audio"], "trainify-audio", ".mp3"))
+        audio_duration = _audio_duration_seconds(audio_filename)
 
     if image_filename and audio_filename:
-        return _patch_workflow(workflow, image_filename, audio_filename, job_id)
+        return _patch_workflow(workflow, image_filename, audio_filename, job_id, audio_duration)
 
     if not payload.get("workflow"):
         raise ValueError("image and audio are required when workflow is not supplied.")
