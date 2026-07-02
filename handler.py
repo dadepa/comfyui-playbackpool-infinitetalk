@@ -18,6 +18,7 @@ COMFY_BASE_URL = f"http://{COMFY_HOST}:{COMFY_PORT}"
 COMFY_DIR = Path(os.environ.get("COMFY_DIR", "/comfyui"))
 COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", str(COMFY_DIR / "input")))
 COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", str(COMFY_DIR / "output")))
+COMFY_MODEL_ROOT = Path(os.environ.get("COMFY_MODEL_ROOT", "/runpod-volume/comfyui/models"))
 WORKFLOW_PATH = Path(os.environ.get("TRAINIFY_WORKFLOW_PATH", "/api-workflow.json"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2"))
 TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "900"))
@@ -27,6 +28,18 @@ LOAD_AUDIO_NODE_ID = "359"
 VIDEO_COMBINE_NODE_ID = "344"
 
 _comfy_process = None
+
+
+def _ensure_runtime_dirs():
+    COMFY_MODEL_ROOT.mkdir(parents=True, exist_ok=True)
+    COMFY_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    COMFY_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    models_path = COMFY_DIR / "models"
+    if not models_path.is_symlink():
+        if models_path.exists():
+            raise RuntimeError(f"{models_path} must be a symlink to {COMFY_MODEL_ROOT}.")
+        models_path.symlink_to(COMFY_MODEL_ROOT, target_is_directory=True)
 
 
 def _json_request(method, url, payload=None, timeout=120):
@@ -48,6 +61,8 @@ def _json_request(method, url, payload=None, timeout=120):
 
 def _start_comfyui():
     global _comfy_process
+
+    _ensure_runtime_dirs()
 
     if _comfy_process and _comfy_process.poll() is None:
         return
