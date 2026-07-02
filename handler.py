@@ -44,6 +44,15 @@ REQUIRED_NODE_TYPES = [
     "MelBandRoFormerModelLoader",
     "VHS_VideoCombine",
 ]
+REQUIRED_MODEL_FILES = [
+    "diffusion_models/Wan2_1-InfiniteTalk-Single_fp8_e4m3fn_scaled_KJ.safetensors",
+    "diffusion_models/Wan2_1-I2V-14B-480P_fp8_e4m3fn.safetensors",
+    "diffusion_models/MelBandRoformer_fp16.safetensors",
+    "vae/Wan2_1_VAE_bf16.safetensors",
+    "clip_vision/clip_vision_h.safetensors",
+    "text_encoders/umt5-xxl-enc-bf16.safetensors",
+    "loras/Wan21_I2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors",
+]
 
 _comfy_process = None
 
@@ -58,6 +67,57 @@ def _ensure_runtime_dirs():
         if models_path.exists():
             raise RuntimeError(f"{models_path} must be a symlink to {COMFY_MODEL_ROOT}.")
         models_path.symlink_to(COMFY_MODEL_ROOT, target_is_directory=True)
+
+
+def _model_tree_snapshot(root):
+    if not root.exists():
+        return {"path": str(root), "exists": False, "files": []}
+
+    files = []
+    for item in sorted(root.rglob("*")):
+        if item.is_file():
+            try:
+                relative_path = str(item.relative_to(root))
+            except ValueError:
+                relative_path = str(item)
+            files.append({"path": relative_path, "size": item.stat().st_size})
+            if len(files) >= 40:
+                break
+
+    return {
+        "path": str(root),
+        "exists": True,
+        "isSymlink": root.is_symlink(),
+        "files": files,
+    }
+
+
+def _validate_model_volume():
+    missing = [relative_path for relative_path in REQUIRED_MODEL_FILES if not (COMFY_MODEL_ROOT / relative_path).is_file()]
+    if not missing:
+        return
+
+    candidates = [
+        COMFY_MODEL_ROOT,
+        Path("/workspace/comfyui/models"),
+        Path("/runpod-volume/comfyui/models"),
+        Path("/comfyui/models"),
+    ]
+    snapshots = []
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        snapshots.append(_model_tree_snapshot(candidate))
+
+    raise RuntimeError(
+        "Required model files are missing from the Serverless worker. "
+        "Attach the same RunPod Network Volume to the endpoint and mount it at /workspace, "
+        "or set COMFY_MODEL_ROOT to the mounted model directory. "
+        f"Missing: {missing}. Snapshots: {json.dumps(snapshots)[:6000]}"
+    )
 
 
 def _json_request(method, url, payload=None, timeout=120):
@@ -363,6 +423,7 @@ def handler(event):
     job_id = payload.get("jobId") or uuid4().hex
 
     _start_comfyui()
+    _validate_model_volume()
     _validate_required_nodes()
     workflow = _prepare_workflow(payload, job_id)
     prompt_id = _queue_prompt(workflow)
