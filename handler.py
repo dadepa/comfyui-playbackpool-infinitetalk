@@ -277,6 +277,37 @@ def _write_named_base64(name, data):
     return filename
 
 
+def _normalize_audio_for_comfy(filename):
+    source_path = COMFY_INPUT_DIR / filename
+    normalized_filename = _safe_name(f"{source_path.stem}-stereo-{uuid4().hex}.wav", f"audio-{uuid4().hex}.wav")
+    normalized_path = COMFY_INPUT_DIR / normalized_filename
+
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source_path),
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-c:a",
+        "pcm_s16le",
+        str(normalized_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to normalize audio to stereo WAV for ComfyUI. "
+            f"ffmpeg stderr: {result.stderr[-2000:]}"
+        )
+
+    return normalized_filename
+
+
 def _load_workflow():
     return json.loads(WORKFLOW_PATH.read_text())
 
@@ -310,13 +341,13 @@ def _prepare_workflow(payload, job_id):
         if lowered.endswith((".png", ".jpg", ".jpeg", ".webp")):
             image_filename = filename
         elif lowered.endswith((".mp3", ".wav", ".m4a", ".mp4")):
-            audio_filename = filename
+            audio_filename = _normalize_audio_for_comfy(filename)
 
     if payload.get("image"):
         image_filename = _write_asset(payload["image"], "trainify-image", ".png")
 
     if payload.get("audio"):
-        audio_filename = _write_asset(payload["audio"], "trainify-audio", ".mp3")
+        audio_filename = _normalize_audio_for_comfy(_write_asset(payload["audio"], "trainify-audio", ".mp3"))
 
     if image_filename and audio_filename:
         return _patch_workflow(workflow, image_filename, audio_filename, job_id)
@@ -344,6 +375,28 @@ def _wait_for_history(prompt_id):
         time.sleep(POLL_INTERVAL_SECONDS)
 
     raise TimeoutError(f"ComfyUI prompt timed out: {prompt_id}")
+
+
+def _raise_for_history_error(history):
+    status = history.get("status") or {}
+    if status.get("status_str") != "error":
+        return
+
+    messages = status.get("messages") or []
+    for message_type, payload in reversed(messages):
+        if message_type != "execution_error":
+            continue
+
+        node_id = payload.get("node_id")
+        node_type = payload.get("node_type")
+        exception_type = payload.get("exception_type")
+        exception_message = payload.get("exception_message")
+        raise RuntimeError(
+            "ComfyUI execution failed"
+            f" at node {node_id} ({node_type}): {exception_type}: {exception_message}"
+        )
+
+    raise RuntimeError(f"ComfyUI execution failed: {json.dumps(status)[:4000]}")
 
 
 def _history_output_summary(history):
@@ -428,6 +481,7 @@ def handler(event):
     workflow = _prepare_workflow(payload, job_id)
     prompt_id = _queue_prompt(workflow)
     history = _wait_for_history(prompt_id)
+    _raise_for_history_error(history)
     video_path = _find_video_from_history(history)
 
     video_base64 = base64.b64encode(video_path.read_bytes()).decode("ascii")
