@@ -17,10 +17,10 @@ RUN find /comfyui/custom_nodes -maxdepth 2 -name requirements.txt -print \
 
 # Model files live on the RunPod Network Volume. Run scripts/download-models.sh once
 # from a setup Pod attached to the same volume, then reuse the volume for Serverless.
-ENV COMFY_MODEL_ROOT=/runpod-volume/comfyui/models
-RUN mkdir -p /runpod-volume/comfyui/models /runpod-volume/comfyui/input /runpod-volume/comfyui/output \
+ENV COMFY_MODEL_ROOT=/workspace/comfyui/models
+RUN mkdir -p /workspace/comfyui/models /workspace/comfyui/input /workspace/comfyui/output \
   && rm -rf /comfyui/models \
-  && ln -s /runpod-volume/comfyui/models /comfyui/models
+  && ln -s /workspace/comfyui/models /comfyui/models
 
 # copy all input data (like images or videos) into comfyui (uncomment and adjust if needed)
 # COPY input/ /comfyui/input/

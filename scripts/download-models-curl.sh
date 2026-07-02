@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL_ROOT="${MODEL_ROOT:-/runpod-volume/comfyui/models}"
+MODEL_ROOT="${MODEL_ROOT:-/workspace/comfyui/models}"
 HF="${HF:-https://huggingface.co}"
 
 mkdir -p \
