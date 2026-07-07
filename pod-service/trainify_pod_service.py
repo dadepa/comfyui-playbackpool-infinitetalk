@@ -117,15 +117,15 @@ def _wait_for_comfy_ready():
     while time.time() < deadline:
         ready, message = _comfy_ready()
         if ready:
-            _log("comfyui ready", message=message)
+            _log("comfyui ready", detail=message)
             return True, message
         last_error = message
         if time.time() >= next_log_at:
-            _log("waiting for comfyui", message=message, timeoutSeconds=READY_TIMEOUT_SECONDS)
+            _log("waiting for comfyui", detail=message, timeoutSeconds=READY_TIMEOUT_SECONDS)
             next_log_at = time.time() + 30
         time.sleep(POLL_INTERVAL_SECONDS)
 
-    _log("comfyui readiness timed out", message=last_error, timeoutSeconds=READY_TIMEOUT_SECONDS)
+    _log("comfyui readiness timed out", detail=last_error, timeoutSeconds=READY_TIMEOUT_SECONDS)
     return False, last_error
 
 
@@ -143,11 +143,11 @@ def _refresh_readiness_loop():
         _set_readiness(ready, message)
 
         if ready:
-            _log("comfyui ready", message=message)
+            _log("comfyui ready", detail=message)
             return
 
         if time.time() >= next_log_at:
-            _log("waiting for comfyui", message=message, timeoutSeconds=READY_TIMEOUT_SECONDS)
+            _log("waiting for comfyui", detail=message, timeoutSeconds=READY_TIMEOUT_SECONDS)
             next_log_at = time.time() + 30
 
         time.sleep(POLL_INTERVAL_SECONDS)
@@ -293,7 +293,7 @@ class TrainifyHandler(BaseHTTPRequestHandler):
                 message = str(readiness["message"])
                 checked_at = readiness["checkedAt"]
             if not ready:
-                _log("ready check failed", message=message)
+                _log("ready check failed", detail=message)
             self._send_json(200 if ready else 503, {"ok": ready, "comfy": ready, "message": message, "checkedAt": checked_at})
             return
 
