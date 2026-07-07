@@ -283,6 +283,13 @@ class TrainifyHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         parts = [part for part in parsed.path.split("/") if part]
 
+        if parsed.path == "/":
+            with readiness_lock:
+                ready = bool(readiness["ready"])
+                message = str(readiness["message"])
+            self._send_json(200, {"ok": True, "service": "trainify-pod-service", "comfy": ready, "message": message})
+            return
+
         if parsed.path == "/health":
             self._send_json(200, {"ok": True, "service": "trainify-pod-service"})
             return
