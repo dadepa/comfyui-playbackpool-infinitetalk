@@ -43,6 +43,13 @@ jobs = {}
 jobs_lock = threading.Lock()
 
 
+def _log(message, **details):
+    if details:
+        print(f"[trainify-pod-service] {message} {json.dumps(details, sort_keys=True)}", flush=True)
+    else:
+        print(f"[trainify-pod-service] {message}", flush=True)
+
+
 def _safe_name(name, fallback):
     clean = "".join(char if char.isalnum() or char in "._-" else "-" for char in name).strip(".-_")
     return clean or fallback
@@ -61,8 +68,11 @@ def _download_url(url, prefix, fallback_ext, original_name="", mime_type=""):
     path = COMFY_INPUT_DIR / filename
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    started_at = time.time()
+    _log("download started", filename=filename, originalName=original_name, mimeType=mime_type)
     with urllib.request.urlopen(url, timeout=180) as response:
         path.write_bytes(response.read())
+    _log("download finished", filename=filename, bytes=path.stat().st_size, elapsedSeconds=round(time.time() - started_at, 2))
 
     return filename
 
@@ -100,18 +110,25 @@ def _comfy_ready():
 def _wait_for_comfy_ready():
     deadline = time.time() + READY_TIMEOUT_SECONDS
     last_error = "ComfyUI not ready"
+    next_log_at = 0
 
     while time.time() < deadline:
         ready, message = _comfy_ready()
         if ready:
+            _log("comfyui ready", message=message)
             return True, message
         last_error = message
+        if time.time() >= next_log_at:
+            _log("waiting for comfyui", message=message, timeoutSeconds=READY_TIMEOUT_SECONDS)
+            next_log_at = time.time() + 30
         time.sleep(POLL_INTERVAL_SECONDS)
 
+    _log("comfyui readiness timed out", message=last_error, timeoutSeconds=READY_TIMEOUT_SECONDS)
     return False, last_error
 
 
 def _load_api_prompt():
+    _log("loading workflow", workflowPath=str(WORKFLOW_PATH))
     workflow = json.loads(WORKFLOW_PATH.read_text())
     if "nodes" in workflow:
         raise RuntimeError("TRAINIFY_WORKFLOW_PATH must point to a ComfyUI API workflow JSON.")
@@ -119,6 +136,7 @@ def _load_api_prompt():
 
 
 def _patch_prompt(prompt, image_filename, audio_filename, job_id):
+    _log("patching workflow", jobId=job_id, image=image_filename, audio=audio_filename)
     prompt[LOAD_IMAGE_NODE_ID]["inputs"]["image"] = image_filename
     prompt[LOAD_AUDIO_NODE_ID]["inputs"]["audio"] = audio_filename
 
@@ -130,19 +148,27 @@ def _patch_prompt(prompt, image_filename, audio_filename, job_id):
 
 
 def _queue_prompt(prompt):
+    _log("queueing comfyui prompt")
     response = _json_request("POST", f"{COMFY_BASE_URL}/prompt", {"prompt": prompt})
     prompt_id = response.get("prompt_id")
     if not prompt_id:
         raise RuntimeError(f"ComfyUI did not return prompt_id: {response}")
+    _log("comfyui prompt queued", promptId=prompt_id)
     return prompt_id
 
 
 def _wait_for_history(prompt_id):
     deadline = time.time() + TIMEOUT_SECONDS
+    started_at = time.time()
+    next_log_at = started_at
     while time.time() < deadline:
         history = _json_request("GET", f"{COMFY_BASE_URL}/history/{prompt_id}")
         if prompt_id in history:
+            _log("comfyui prompt completed", promptId=prompt_id, elapsedSeconds=round(time.time() - started_at, 2))
             return history[prompt_id]
+        if time.time() >= next_log_at:
+            _log("waiting for comfyui prompt", promptId=prompt_id, elapsedSeconds=round(time.time() - started_at, 2), timeoutSeconds=TIMEOUT_SECONDS)
+            next_log_at = time.time() + 30
         time.sleep(POLL_INTERVAL_SECONDS)
     raise TimeoutError(f"ComfyUI prompt timed out: {prompt_id}")
 
@@ -155,10 +181,13 @@ def _find_video_from_history(history):
         filename = file_info.get("filename")
         if filename and Path(filename).suffix.lower() in VIDEO_EXTENSIONS:
             subfolder = file_info.get("subfolder") or ""
-            return COMFY_OUTPUT_DIR / subfolder / filename
+            path = COMFY_OUTPUT_DIR / subfolder / filename
+            _log("video found in history", path=str(path))
+            return path
 
     for path in sorted(COMFY_OUTPUT_DIR.rglob("*"), key=lambda item: item.stat().st_mtime, reverse=True):
         if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+            _log("video found by output scan", path=str(path))
             return path
 
     raise RuntimeError("No video output found after ComfyUI render.")
@@ -173,6 +202,7 @@ def _set_job(job_id, **updates):
 
 def _run_job(job_id, payload):
     try:
+      _log("job started", jobId=job_id)
       image = payload.get("image") or {}
       audio = payload.get("audio") or {}
       image_filename = _download_url(payload["imageUrl"], "trainify-image", ".png", image.get("name", ""), image.get("mimeType", ""))
@@ -186,8 +216,10 @@ def _run_job(job_id, payload):
       history = _wait_for_history(prompt_id)
       video_path = _find_video_from_history(history)
       _set_job(job_id, status="COMPLETED", videoPath=str(video_path), contentType=VIDEO_CONTENT_TYPES.get(video_path.suffix.lower(), "video/mp4"))
+      _log("job completed", jobId=job_id, videoPath=str(video_path), bytes=video_path.stat().st_size)
     except Exception as error:
       _set_job(job_id, status="FAILED", error=str(error))
+      _log("job failed", jobId=job_id, error=str(error))
 
 
 class TrainifyHandler(BaseHTTPRequestHandler):
@@ -231,6 +263,8 @@ class TrainifyHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/ready":
             ready, message = _comfy_ready()
+            if not ready:
+                _log("ready check failed", message=message)
             self._send_json(200 if ready else 503, {"ok": ready, "comfy": ready, "message": message})
             return
 
@@ -281,6 +315,7 @@ class TrainifyHandler(BaseHTTPRequestHandler):
             return
 
         job_id = _safe_name(payload.get("jobId") or uuid4().hex, uuid4().hex)
+        _log("job accepted", jobId=job_id)
         _set_job(job_id, id=job_id, jobId=job_id, status="RUNNING", createdAt=time.time())
         threading.Thread(target=_run_job, args=(job_id, payload), daemon=True).start()
         self._send_json(202, {"id": job_id, "jobId": job_id, "status": "RUNNING"})
@@ -289,7 +324,15 @@ class TrainifyHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     COMFY_INPUT_DIR.mkdir(parents=True, exist_ok=True)
     COMFY_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Trainify Pod service listening on http://{HOST}:{PORT}")
+    _log(
+        "service starting",
+        host=HOST,
+        port=PORT,
+        comfyBaseUrl=COMFY_BASE_URL,
+        comfyInputDir=str(COMFY_INPUT_DIR),
+        comfyOutputDir=str(COMFY_OUTPUT_DIR),
+        workflowPath=str(WORKFLOW_PATH),
+    )
     ready, message = _wait_for_comfy_ready()
-    print(f"ComfyUI readiness before serving jobs: ready={ready} message={message}")
+    _log("readiness before serving jobs", ready=ready, message=message)
     ThreadingHTTPServer((HOST, PORT), TrainifyHandler).serve_forever()
