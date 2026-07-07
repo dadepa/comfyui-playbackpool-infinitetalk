@@ -41,6 +41,8 @@ VIDEO_CONTENT_TYPES = {
 
 jobs = {}
 jobs_lock = threading.Lock()
+readiness = {"ready": False, "message": "ComfyUI not checked yet", "checkedAt": None}
+readiness_lock = threading.Lock()
 
 
 def _log(message, **details):
@@ -125,6 +127,30 @@ def _wait_for_comfy_ready():
 
     _log("comfyui readiness timed out", message=last_error, timeoutSeconds=READY_TIMEOUT_SECONDS)
     return False, last_error
+
+
+def _set_readiness(ready, message):
+    with readiness_lock:
+        readiness["ready"] = ready
+        readiness["message"] = message
+        readiness["checkedAt"] = time.time()
+
+
+def _refresh_readiness_loop():
+    next_log_at = 0
+    while True:
+        ready, message = _comfy_ready()
+        _set_readiness(ready, message)
+
+        if ready:
+            _log("comfyui ready", message=message)
+            return
+
+        if time.time() >= next_log_at:
+            _log("waiting for comfyui", message=message, timeoutSeconds=READY_TIMEOUT_SECONDS)
+            next_log_at = time.time() + 30
+
+        time.sleep(POLL_INTERVAL_SECONDS)
 
 
 def _load_api_prompt():
@@ -262,10 +288,13 @@ class TrainifyHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/ready":
-            ready, message = _comfy_ready()
+            with readiness_lock:
+                ready = bool(readiness["ready"])
+                message = str(readiness["message"])
+                checked_at = readiness["checkedAt"]
             if not ready:
                 _log("ready check failed", message=message)
-            self._send_json(200 if ready else 503, {"ok": ready, "comfy": ready, "message": message})
+            self._send_json(200 if ready else 503, {"ok": ready, "comfy": ready, "message": message, "checkedAt": checked_at})
             return
 
         if len(parts) >= 2 and parts[0] == "jobs":
@@ -333,6 +362,5 @@ if __name__ == "__main__":
         comfyOutputDir=str(COMFY_OUTPUT_DIR),
         workflowPath=str(WORKFLOW_PATH),
     )
-    ready, message = _wait_for_comfy_ready()
-    _log("readiness before serving jobs", ready=ready, message=message)
+    threading.Thread(target=_refresh_readiness_loop, daemon=True).start()
     ThreadingHTTPServer((HOST, PORT), TrainifyHandler).serve_forever()
