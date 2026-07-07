@@ -26,6 +26,7 @@ WORKFLOW_PATH = Path(
 POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2"))
 TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "3600"))
 SHARED_SECRET = os.environ.get("TRAINIFY_POD_SHARED_SECRET", "")
+READY_TIMEOUT_SECONDS = int(os.environ.get("TRAINIFY_READY_TIMEOUT_SECONDS", "1200"))
 
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
@@ -81,6 +82,33 @@ def _json_request(method, url, payload=None):
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"ComfyUI HTTP {error.code}: {body}") from error
+
+
+def _comfy_ready():
+    try:
+        response = _json_request("GET", f"{COMFY_BASE_URL}/system_stats")
+    except Exception as error:
+        return False, str(error)
+
+    devices = response.get("devices") if isinstance(response, dict) else None
+    if isinstance(devices, list) and len(devices) > 0:
+        return True, "ready"
+
+    return True, "ComfyUI responded"
+
+
+def _wait_for_comfy_ready():
+    deadline = time.time() + READY_TIMEOUT_SECONDS
+    last_error = "ComfyUI not ready"
+
+    while time.time() < deadline:
+        ready, message = _comfy_ready()
+        if ready:
+            return True, message
+        last_error = message
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+    return False, last_error
 
 
 def _load_api_prompt():
@@ -198,7 +226,12 @@ class TrainifyHandler(BaseHTTPRequestHandler):
         parts = [part for part in parsed.path.split("/") if part]
 
         if parsed.path == "/health":
-            self._send_json(200, {"ok": True})
+            self._send_json(200, {"ok": True, "service": "trainify-pod-service"})
+            return
+
+        if parsed.path == "/ready":
+            ready, message = _comfy_ready()
+            self._send_json(200 if ready else 503, {"ok": ready, "comfy": ready, "message": message})
             return
 
         if len(parts) >= 2 and parts[0] == "jobs":
@@ -257,4 +290,6 @@ if __name__ == "__main__":
     COMFY_INPUT_DIR.mkdir(parents=True, exist_ok=True)
     COMFY_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"Trainify Pod service listening on http://{HOST}:{PORT}")
+    ready, message = _wait_for_comfy_ready()
+    print(f"ComfyUI readiness before serving jobs: ready={ready} message={message}")
     ThreadingHTTPServer((HOST, PORT), TrainifyHandler).serve_forever()
