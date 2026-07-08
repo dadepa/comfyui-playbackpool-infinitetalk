@@ -20,7 +20,7 @@ COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/workspace/ComfyUI/o
 WORKFLOW_PATH = Path(
     os.environ.get(
         "TRAINIFY_WORKFLOW_PATH",
-        str(Path(__file__).resolve().parents[1] / "runpod-worker" / "workflows" / "playbackpool-infinite-talk-api.json"),
+        str(Path(__file__).resolve().parents[1] / "api-workflow.json"),
     )
 )
 POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2"))
@@ -154,8 +154,15 @@ def _refresh_readiness_loop():
 
 
 def _load_api_prompt():
-    _log("loading workflow", workflowPath=str(WORKFLOW_PATH))
-    workflow = json.loads(WORKFLOW_PATH.read_text())
+    workflow_path = WORKFLOW_PATH
+    if not workflow_path.exists():
+        fallback_path = Path(__file__).resolve().parents[1] / "api-workflow.json"
+        if fallback_path.exists():
+            _log("configured workflow missing, using fallback", workflowPath=str(workflow_path), fallbackPath=str(fallback_path))
+            workflow_path = fallback_path
+
+    _log("loading workflow", workflowPath=str(workflow_path))
+    workflow = json.loads(workflow_path.read_text())
     if "nodes" in workflow:
         raise RuntimeError("TRAINIFY_WORKFLOW_PATH must point to a ComfyUI API workflow JSON.")
     return workflow
