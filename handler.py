@@ -28,6 +28,7 @@ MAX_SINGLE_RENDER_SECONDS = float(os.environ.get("MAX_SINGLE_RENDER_SECONDS", "4
 
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
+IMAGE_TO_VIDEO_NODE_ID = "348"
 MULTITALK_EMBEDS_NODE_ID = "360"
 FPS_NODE_ID = "361"
 VIDEO_COMBINE_NODE_ID = "344"
@@ -414,7 +415,9 @@ def _patch_workflow(workflow, image_filename, audio_filename, job_id, audio_dura
                 "Split the audio into shorter segments and stitch the rendered videos."
             )
 
-        workflow[MULTITALK_EMBEDS_NODE_ID]["inputs"]["num_frames"] = _frames_for_duration(audio_duration_seconds, fps)
+        num_frames = _frames_for_duration(audio_duration_seconds, fps)
+        workflow[IMAGE_TO_VIDEO_NODE_ID]["inputs"]["frame_window_size"] = num_frames
+        workflow[MULTITALK_EMBEDS_NODE_ID]["inputs"]["num_frames"] = num_frames
 
     video_inputs = workflow[VIDEO_COMBINE_NODE_ID]["inputs"]
     video_inputs["filename_prefix"] = f"trainify/{_safe_name(job_id, 'job')}"

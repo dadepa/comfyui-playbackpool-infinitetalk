@@ -2,6 +2,7 @@ import base64
 import json
 import mimetypes
 import os
+import subprocess
 import threading
 import time
 import urllib.error
@@ -30,6 +31,9 @@ READY_TIMEOUT_SECONDS = int(os.environ.get("TRAINIFY_READY_TIMEOUT_SECONDS", "12
 
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
+IMAGE_TO_VIDEO_NODE_ID = "348"
+MULTITALK_EMBEDS_NODE_ID = "360"
+FPS_NODE_ID = "361"
 VIDEO_COMBINE_NODE_ID = "344"
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv"}
 VIDEO_CONTENT_TYPES = {
@@ -168,10 +172,63 @@ def _load_api_prompt():
     return workflow
 
 
-def _patch_prompt(prompt, image_filename, audio_filename, job_id):
-    _log("patching workflow", jobId=job_id, image=image_filename, audio=audio_filename)
+def _audio_duration_seconds(audio_filename):
+    audio_path = COMFY_INPUT_DIR / audio_filename
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(audio_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to read audio duration with ffprobe. stderr: {result.stderr[-2000:]}")
+
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError as error:
+        raise RuntimeError(f"Invalid ffprobe duration for {audio_filename}: {result.stdout!r}") from error
+
+    if duration <= 0:
+        raise RuntimeError(f"Invalid audio duration for {audio_filename}: {duration}")
+
+    return duration
+
+
+def _frames_for_duration(duration_seconds, fps):
+    raw_frames = max(1, int(duration_seconds * fps + 0.999))
+    # Wan video workflows are normally happiest with frame counts shaped as 4n + 1.
+    remainder = (raw_frames - 1) % 4
+    if remainder:
+        raw_frames += 4 - remainder
+    return raw_frames
+
+
+def _patch_prompt(prompt, image_filename, audio_filename, job_id, audio_duration_seconds):
+    fps = float(prompt.get(FPS_NODE_ID, {}).get("inputs", {}).get("value", 25))
+    num_frames = _frames_for_duration(audio_duration_seconds, fps)
+    _log(
+        "patching workflow",
+        jobId=job_id,
+        image=image_filename,
+        audio=audio_filename,
+        audioDurationSeconds=round(audio_duration_seconds, 3),
+        fps=fps,
+        numFrames=num_frames,
+    )
     prompt[LOAD_IMAGE_NODE_ID]["inputs"]["image"] = image_filename
     prompt[LOAD_AUDIO_NODE_ID]["inputs"]["audio"] = audio_filename
+    prompt[IMAGE_TO_VIDEO_NODE_ID]["inputs"]["frame_window_size"] = num_frames
+    prompt[MULTITALK_EMBEDS_NODE_ID]["inputs"]["num_frames"] = num_frames
 
     video_inputs = prompt[VIDEO_COMBINE_NODE_ID]["inputs"]
     video_inputs["filename_prefix"] = f"trainify/{_safe_name(job_id, 'job')}"
@@ -240,9 +297,10 @@ def _run_job(job_id, payload):
       audio = payload.get("audio") or {}
       image_filename = _download_url(payload["imageUrl"], "trainify-image", ".png", image.get("name", ""), image.get("mimeType", ""))
       audio_filename = _download_url(payload["audioUrl"], "trainify-audio", ".mp3", audio.get("name", ""), audio.get("mimeType", ""))
+      audio_duration = _audio_duration_seconds(audio_filename)
 
       prompt = _load_api_prompt()
-      _patch_prompt(prompt, image_filename, audio_filename, job_id)
+      _patch_prompt(prompt, image_filename, audio_filename, job_id, audio_duration)
 
       prompt_id = _queue_prompt(prompt)
       _set_job(job_id, promptId=prompt_id)
