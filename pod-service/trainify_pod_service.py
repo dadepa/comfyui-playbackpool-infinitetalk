@@ -28,6 +28,7 @@ POLL_INTERVAL_SECONDS = float(os.environ.get("COMFY_POLL_INTERVAL_SECONDS", "2")
 TIMEOUT_SECONDS = int(os.environ.get("COMFY_TIMEOUT_SECONDS", "3600"))
 SHARED_SECRET = os.environ.get("TRAINIFY_POD_SHARED_SECRET", "")
 READY_TIMEOUT_SECONDS = int(os.environ.get("TRAINIFY_READY_TIMEOUT_SECONDS", "1200"))
+COMFY_LOG_PATH = Path(os.environ.get("COMFY_LOG_PATH", "/workspace/comfyui.log"))
 
 LOAD_IMAGE_NODE_ID = "349"
 LOAD_AUDIO_NODE_ID = "359"
@@ -47,6 +48,14 @@ jobs = {}
 jobs_lock = threading.Lock()
 readiness = {"ready": False, "message": "ComfyUI not checked yet", "checkedAt": None}
 readiness_lock = threading.Lock()
+
+FATAL_COMFY_LOG_PATTERNS = (
+    "CUDA-capable device(s) is/are busy or unavailable",
+    "cudaErrorDevicesUnavailable",
+    "No CUDA GPUs are available",
+    "torch.AcceleratorError",
+    "RuntimeError: CUDA error",
+)
 
 
 def _log(message, **details):
@@ -100,10 +109,29 @@ def _json_request(method, url, payload=None):
         raise RuntimeError(f"ComfyUI HTTP {error.code}: {body}") from error
 
 
+def _comfy_fatal_log_message():
+    if not COMFY_LOG_PATH.exists():
+        return ""
+
+    try:
+        text = COMFY_LOG_PATH.read_text(errors="replace")[-12000:]
+    except Exception as error:
+        return f"Could not read ComfyUI log: {error}"
+
+    for pattern in FATAL_COMFY_LOG_PATTERNS:
+        if pattern in text:
+            return f"ComfyUI startup failed: {pattern}"
+
+    return ""
+
+
 def _comfy_ready():
     try:
         response = _json_request("GET", f"{COMFY_BASE_URL}/system_stats")
     except Exception as error:
+        fatal_message = _comfy_fatal_log_message()
+        if fatal_message:
+            return False, fatal_message
         return False, str(error)
 
     devices = response.get("devices") if isinstance(response, dict) else None
